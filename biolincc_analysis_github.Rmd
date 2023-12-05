@@ -1,0 +1,196 @@
+---
+title: "Biolincc Analysis"
+author: "Amanda Gassett"
+date: '2022-08-22'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(warn = -1)
+library(lme4)
+library(lmerTest)
+library(data.table)
+library(kableExtra)
+library(sas7bdat)
+```
+
+# Overview
+
+Using updated air pollution provided in the Biolincc datasets produces somewhat different results from the original analysis, although the new results are within the original CI's and both are still statistically significant.  The Lancet abstract reported an increase of 4.1 Agatston units per year per 5 µg/m3 for PM2.5 and 4.8 units per year per 40 ppb.
+
+Here are some sources of differences, including some minor coding errors that I found while reviewing my original analysis for this re-analysis project.
+
+Updated PM2.5 and NOx: We decided to provide Biolincc with the updated models Kirwa developed rather than the original Keller models.  This makes a big difference in the PM2.5 results but very little difference in the NOx results.  Part of this difference was attributed to different observations being included in the analysis due to slightly different modeling domains (see the rows labeled "matched observations").
+
+Biolincc dataset: There are some small differences in the number of participants/observations between the original dataset and the data I was provided for biolincc.  There are a few more scans available in the newer dataset and there were some changes in revascularizations or revascularization times.  The upshot of this is that the results are somewhat sensitive to which participants are included.
+
+SES: The SES variables that we were allowed to include in the Biolincc dataset are somewhat different from what we were provided at the time of the original analysis.  Given the results below there's not much evidence for confounding or mediation by SES, so this change doesn't really impact the results.
+
+Scanner: When I reviewed the datasets for this analysis I realized that the same scanner model sometimes had slightly different scanner coding at different exams (for example "Imatron C-150" vs "3: IMATRON C-150").  Since I originally didn't notice and didn't re-code them to make sure they were all the same, this means that I think we over-adjusted in the transient part of the model.  Cleaning this up strengthens the original results for both pollutants.
+
+Smoking: Smoking was supposed to be coded as 5 categories: 1) never smoker/no second-hand smoke (SHS) exposure, 2) never/any SHS, 3) current smoker, 4) former/no SHS, 5) former/any SHS.  In the original analysis, I had coded smoking as the interaction between smoking status and second-hand smoke since this should have produced an exactly equivalent result.  However, I think I missed re-coding the SHS at some of the exams, since both smoking status and SHS were covered by a slightly different collection of variables at each exam.  This doesn't impact the final result very much, but I wanted to provide clearer coding for the Biolincc analysis.
+
+Different analysis software: The original analysis used the HPMIXED procedure in SAS.  A contemporary re-analysis in R showed results that were within several hundredths of the original effect estimates.
+
+```{r, echo=FALSE, cache = TRUE}
+# Read in Biolincc Data - Assumes you've run the data management script
+biolincc_long <- fread("/var/local/QUTE/eac_database/requests/dr0347/biolincc_long.csv")
+
+# Excluve revascularization/CABG
+biolincc_long$REVCTT[biolincc_long$REVC == 1 & !is.na(biolincc_long$REVC)] <- 
+  biolincc_long$REVCTT[biolincc_long$REVC == 1 & !is.na(biolincc_long$REVC)]
+biolincc_long$CBGTT[biolincc_long$CBG == 1 & !is.na(biolincc_long$CBG)] <- 
+  biolincc_long$CBGTT[biolincc_long$CBG == 1& !is.na(biolincc_long$CBG)]
+biolincc_long$agatpc[biolincc_long$REVCTT < biolincc_long$fu_yr & !is.na(biolincc_long$REVCTT) & 
+                       !is.na(biolincc_long$agatpc) & biolincc_long$REVC == 1] <- NA
+biolincc_long$agatpc[biolincc_long$CBGTT < biolincc_long$fu_yr & !is.na(biolincc_long$CBGTT) & 
+                       !is.na(biolincc_long$agatpc) & biolincc_long$CBG == 1] <- NA
+
+# Scale time to years
+biolincc_long$ct_time[is.na(biolincc_long$ct_time)] <- biolincc_long$fu_yr[is.na(biolincc_long$ct_time)]
+biolincc_long$fu_yr <- biolincc_long$ct_time/365.25
+
+# Center and scale age
+biolincc_long$age_scaled <- (biolincc_long$age1c - 62)/10
+
+# Limit dataset to rows with CAC scores
+biolincc_long   <- biolincc_long[!is.na(biolincc_long$agatpc),]
+
+# Make sure the analysis doesn't have any missing -
+# most equivalent to original analysis
+biolincc_long$model3 <- !is.na(biolincc_long$pm25_bl) & !is.na(biolincc_long$pm25_fu) & !is.na(biolincc_long$exercm_cat) & 
+  !is.na(biolincc_long$education) & !is.na(biolincc_long$ht1) & !is.na(biolincc_long$hip) & !is.na(biolincc_long$statin) &
+  !is.na(biolincc_long$shndsmk)
+setDT(biolincc_long)
+
+```
+
+
+```{r, echo = FALSE, cache = TRUE}
+new_pm <- list()
+
+# Biolincc Version
+new_pm[[1]] <-  suppressWarnings(summary(lmer(agatpc ~ age_scaled*fu_yr + gender1*fu_yr + as.factor(race1c)*fu_yr + as.factor(site)*fu_yr +
+                         ht1*fu_yr + ht2*fu_yr + wtlb1*fu_yr + hip*fu_yr + waistcm1*fu_yr + 
+                         as.factor(comb_smk) + as.factor(comb_smk):fu_yr + pkyrs1c*fu_yr + 
+                         chol1*fu_yr + hdl1*fu_yr + trig1*fu_yr + statin + statin:fu_yr  + as.factor(hghchol1)*fu_yr + 
+                         employ*fu_yr + F1_PC2*fu_yr + income*fu_yr + as.factor(education)*fu_yr +
+                         as.factor(exercm_cat)*fu_yr + pm25_bl_scaled + pm25_fu_scaled:fu_yr + as.factor(scanner) +
+                         (1 + fu_yr | MESAID), 
+                       data = biolincc_long, REML = FALSE, control = lmerControl(optimizer ='Nelder_Mead') )))
+
+# NOx
+
+# Biolincc Version - NOx
+new_pm[[2]] <-  suppressWarnings(summary(lmer(agatpc ~ age_scaled*fu_yr + gender1*fu_yr + as.factor(race1c)*fu_yr + as.factor(site)*fu_yr +
+                         ht1*fu_yr + ht2*fu_yr + wtlb1*fu_yr + hip*fu_yr + waistcm1*fu_yr + 
+                         as.factor(comb_smk) + as.factor(comb_smk):fu_yr + pkyrs1c*fu_yr + 
+                         chol1*fu_yr + hdl1*fu_yr + trig1*fu_yr + statin + statin:fu_yr  + as.factor(hghchol1)*fu_yr + 
+                         employ*fu_yr + F1_PC2*fu_yr + income*fu_yr + as.factor(education)*fu_yr +
+                         as.factor(exercm_cat)*fu_yr + nox_bl_scaled + nox_fu_scaled:fu_yr + as.factor(scanner) +
+                         (1 + fu_yr | MESAID), 
+                       data = biolincc_long, REML = FALSE, control = lmerControl(optimizer ='Nelder_Mead') )))
+
+result <- list()
+for (i in 1){
+  temp <- new_pm[[i]]$coefficients[,c(1,2,5)]
+  temp1 <- temp[grep("pm25_fu_scaled",rownames(temp)),]
+  result[[i]] <- round(temp1,3)
+  temp2 <- new_pm[[i]]$optinfo$conv$lme4$messages
+  result[[i]]$note <- paste(temp2, sep=";", collapse = "")
+  result[[i]]$n_id <- new_pm[[i]]$ngrps[1]
+  result[[i]]$n_obs<- length(new_pm[[i]]$residuals)
+}
+for (i in 2){
+  temp <- new_pm[[i]]$coefficients[,c(1,2,5)]
+  temp1 <- temp[grep("nox_fu_scaled",rownames(temp)),]
+  result[[i]] <- round(temp1,3)
+  temp2 <- new_pm[[i]]$optinfo$conv$lme4$messages
+  result[[i]]$note <- paste(temp2, sep=";", collapse = "")
+  result[[i]]$n_id <- new_pm[[i]]$ngrps[1]
+  result[[i]]$n_obs<- length(new_pm[[i]]$residuals)
+}
+
+final <- do.call(rbind.data.frame, result)
+final$Model_label <- c("Biolincc PM2.5",
+                       "Biolincc NOx")
+names(final)[1:3] <- c("Estimate","SE","P")
+final$pct_diff_from_abstract      <- abs(round((4.1-final$Estimate)*100/4.1,1))
+final$pct_diff_from_abstract[2] <- abs(round((4.8-final$Estimate[2])*100/4.8,1))
+
+final[,c("Model_label","note","Estimate","SE","P","pct_diff_from_abstract","n_id","n_obs")] %>%
+  kbl(caption = "Main Results: Association with pollution in primary adjusted models", row.names = FALSE) %>%
+  kable_minimal(bootstrap_options = "condensed", full_width = FALSE) %>%
+  column_spec(1, width = "10cm") %>%
+  column_spec(2, width = "8cm") %>%
+  pack_rows("PM2.5", 1, 1) %>%
+  pack_rows("NOx", 2, 2)
+
+```
+
+# City-Specific Results
+
+```{r, echo = FALSE, cache = TRUE}
+#PM2.5
+
+city_spec <- list()
+for (i in 3:8){
+  city_spec[[i-2]] <-  suppressWarnings(summary(lmer(agatpc ~ age_scaled*fu_yr + gender1*fu_yr + as.factor(race1c)*fu_yr + 
+                         ht1*fu_yr + ht2*fu_yr + wtlb1*fu_yr + hip*fu_yr + waistcm1*fu_yr + 
+                         as.factor(comb_smk)*fu_yr + pkyrs1c*fu_yr +
+                         chol1*fu_yr + hdl1*fu_yr + trig1*fu_yr + statin + statin:fu_yr  + as.factor(hghchol1)*fu_yr + 
+                         employ*fu_yr + F1_PC2*fu_yr + income*fu_yr + as.factor(education)*fu_yr +
+                         as.factor(exercm_cat)*fu_yr + pm25_bl_scaled + pm25_fu_scaled:fu_yr + as.factor(scanner) +
+                         (1 + fu_yr | MESAID) , subset = site == i,
+                       data = biolincc_long, REML = FALSE, control = lmerControl(optimizer ='Nelder_Mead') )))
+}
+result <- list()
+for (i in 1:6){
+  temp <- city_spec[[i]]$coefficients[,c(1,2,5)]
+  temp1 <- temp[grep('pm25_fu_scaled',rownames(temp)),]
+  result[[i]] <- round(temp1,3)
+  temp2 <- city_spec[[i]]$optinfo$conv$lme4$messages
+  result[[i]]$note <- paste(temp2, sep=';', collapse = '')
+}
+final <- do.call(rbind.data.frame, result)
+names(final)[1:3] <- c('Estimate','SE','P')
+final$site <- c(3:8)
+rownames(final) <- c('W-S','NYC','BLT','MSP','CHI','LA')
+
+final %>%
+  kbl(caption = "PM2.5 Results") %>%
+  kable_minimal()
+
+# NOx
+
+city_spec <- list()
+for (i in 3:8){
+  city_spec[[i-2]] <-  suppressWarnings(summary(lmer(agatpc ~ age_scaled*fu_yr + gender1*fu_yr + as.factor(race1c)*fu_yr + 
+                         ht1*fu_yr + ht2*fu_yr + wtlb1*fu_yr + hip*fu_yr + waistcm1*fu_yr + 
+                         as.factor(comb_smk)*fu_yr + pkyrs1c*fu_yr +
+                         chol1*fu_yr + hdl1*fu_yr + trig1*fu_yr + statin + statin:fu_yr  + as.factor(hghchol1)*fu_yr + 
+                         employ*fu_yr + F1_PC2*fu_yr + income*fu_yr + as.factor(education)*fu_yr +
+                         as.factor(exercm_cat)*fu_yr + nox_bl_scaled + nox_fu_scaled:fu_yr + as.factor(scanner) +
+                         (1 + fu_yr | MESAID) , subset = site == i,
+                       data = biolincc_long, REML = FALSE, control = lmerControl(optimizer ='Nelder_Mead') )))
+}
+result <- list()
+for (i in 1:6){
+  temp <- city_spec[[i]]$coefficients[,c(1,2,5)]
+  temp1 <- temp[grep('nox_fu_scaled',rownames(temp)),]
+  result[[i]] <- round(temp1,3)
+  temp2 <- city_spec[[i]]$optinfo$conv$lme4$messages
+  result[[i]]$note <- paste(temp2, sep=';', collapse = '')
+}
+final <- do.call(rbind.data.frame, result)
+names(final)[1:3] <- c('Estimate','SE','P')
+final$site <- c(3:8)
+rownames(final) <- c('W-S','NYC','BLT','MSP','CHI','LA')
+
+
+final %>%
+  kbl(caption = "NOx Results") %>%
+  kable_minimal() 
+```
+
