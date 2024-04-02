@@ -6,7 +6,7 @@ library(data.table)
 library(sas7bdat)
 
 # Here, set the directory where the data have been downloaded
-setwd("/var/local/QUTE/eac_database/requests/dr0347/")
+setwd("redacted")
 
 # ---------------------- #
 # Read Biolincc datasets #
